@@ -1,0 +1,225 @@
+---
+title: "EC4990 Breast Cancer Report"
+author: "Yuqing(Kelly) Lin"
+date: "2022-12-18"
+output:
+  html_document:
+    number_sections: yes
+    theme: cerulean
+    highlight: kate
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+---
+# Introduction
+
+The project aims to perform a classification analysis on the Breast Cancer Wisconsin data set by using k-nearest neighbors. The data set is downloaded from the UCI Machine Learning Repository. The goal is to predict whether the cancer cells are benign or malignant by using the predictor variables marginal adhesion and normal nucleoli. Each predictor variable has values that range from 1 to 10, with 1 being the closest to benign and 10 being the closest to malignant. Marginal adhesion refers to the inability of cells to stick together, which signals malignancy. The nucleolus within cells also becomes more prominent in size in malignant cells. 
+
+K-nearest neighbors is a machine learning method for predicting records by comparing them to the closest neighbor(s). The algorithm first calculates the distance between the testing record and all observations in the training dataset. Then, it finds the observation(s) or neighbor(s) that has the smallest distance to the testing record. If only 1 neighbor is considered, then the predicted class for the testing record is the same as the true class from its closest neighbor. If more than 1 neighbors are considered, then the majority of the true class from its closest neighbors becomes the predicted class. To assess the prediction quality, the true class of each testing record is compared with its prediction and a confusion matrix is created.  
+
+# Loading the packages and setting the working directory to the project folder containing the data file
+
+```{r message=FALSE, warning=FALSE}
+library(readxl); library(rio); library(janitor); library(tidymodels)
+
+setwd("~/Library/CloudStorage/OneDrive-Personal/CPP/Fall 2022/EC4990 Machine Learning/Lin_Yuqing(Kelly)_MLProject")
+```
+
+# Importing and cleaning the data 
+
+Here, the data set is imported using the rio package. Variable names are changed to the upper camel format and the 3 variables needed for the analysis are selected. The variable "Class" is renamed to "DiagnosisIsMalignant" for better clarity. The original values stored in "DiagnosisIsMalignant" are 2 and 4, with 2 representing benign and 4 representing malignant. The function "ifelse" is used to convert them to 0 and 1, respectively. For example, if "DiagnosisIsMalignant" = 1, then it means the observation is malignant. Lastly, "DiagnosisIsMalignant" is transformed into a factor variable because it is an outcome variable. R requires outcome variables to be factor type variables when performing classification.
+
+```{r}
+DataBreastCancer=import("Breast_Cancer_Wisconsin_Data.xlsx") %>% 
+  clean_names("upper_camel") %>% 
+  rename("DiagnosisIsMalignant"="Class") %>% 
+  select(DiagnosisIsMalignant,MarginalAdhesion,NormalNucleoli) %>%
+  mutate(DiagnosisIsMalignant=ifelse(DiagnosisIsMalignant==2,0,1)) %>%
+  mutate(DiagnosisIsMalignant=as.factor(DiagnosisIsMalignant)) 
+```
+
+# Splitting the data into training and testing data
+
+Here, we first use "set.seed" to initiate the random number generator, which generates the same random outcome each time the command is executed. Then, the data is split into training and testing data. 70% of observations are randomly assigned to the training data and 30% to the testing data. The two categories, "benign" and "malignant", are equally represented in both the training and testing datasets by the argument "strata = DiagnosisIsMalignant". 
+
+```{r}
+set.seed(876)
+Split7030=initial_split(DataBreastCancer, prop = 0.7, strata = DiagnosisIsMalignant)
+DataTrain=training(Split7030)
+DataTest=testing(Split7030)
+```
+
+# Creating a recipe
+
+The recipe defines the outcome and predictor variables and preprocesses the data. Again, "DiagnosisIsMalignant" is the outcome variable while "MarginalAdhesion" and "NormalNucleoli" are predictor variables. Steps are added to eliminate incomplete observations and to normalize all predictor variables. 
+
+```{r}
+RecipeBreastCancer=recipe(DiagnosisIsMalignant~., data = DataTrain) %>% 
+  step_naomit() %>% 
+  step_normalize(all_predictors())
+```
+
+# Creating a model design and hyper-parameter tuning  
+
+Here, a model design is created to provide a blueprint, which includes the machine learning algorithm, the hyper-parameter, the R package needed to perform the algorithm (kknn), and the type of analysis. 
+
+The number of neighbors is the hyper-parameter, which is substituted with tune() as a placeholder. The placeholder will be replaced by the different hyper-parameter values chosen to be evaluated later. This tuning process finds the optimal hyper-parameter according to metrics such as maximizing the accuracy. 
+
+```{r}
+ModelDeisgnKNN=nearest_neighbor(neighbors = tune(), weight_func = "rectangular") %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+```
+
+# Creating a workflow
+
+The workflow is created by adding the recipe and the model. The word "Tune" is added in front of the workflow name to indicate that this workflow is used to tune the hyper-parameter and that the workflow is not fitted to the training data. Fitting the model is not possible at this point because the hyper-parameter has not yet been determined.
+
+```{r}
+TuneWFModelBreastCancer=workflow() %>% 
+  add_recipe(RecipeBreastCancer) %>% 
+  add_model(ModelDeisgnKNN)
+```
+
+# Creating a tibble of different hyper-parameter values to be evaluated
+
+The name of the hyper-parameter tibble needs to be the same as the hyper-parameter name, which is "neighbors." The different hyper-parameter values chosen to be evaluated are 1, 2, 3, 5, 7, 10, and 20.
+
+```{r}
+ParGridBreastCancer=tibble(neighbors=c(1,2,3,5,7,10,20))
+print(ParGridBreastCancer)
+```
+
+# Creating 10 folds and stratifying for "DiagnosisIsMalignant"
+
+The cross validation procedure is used to create multiple validation data sets, called folds or resamples, to assess different model designs with the different hyper-parameter values to be tested. This method shuffles the training data set and then copies it 10 times, assigning each copy to one of 10 folds. Each fold has a different set of observations excluded from the training data and used for the assessment of the various hyper-parameter values tested. Each hyper-parameter value's predictive performance is calculated as the mean of the performance for the 10 folds. The advantages are the elimination of the risk of an unusual validation data set and the ability to use all observations of the training data at some stage of model assessment.
+
+The command "set.seed" is needed here as well because of the random process in generating the validation data sets. 
+
+```{r message=FALSE, warning=FALSE}
+set.seed(876)
+FoldsBreastCancer=vfold_cv(DataTrain, v=10, strata = DiagnosisIsMalignant)
+print(FoldsBreastCancer)
+```
+
+# Evaluating hyper-parameter values
+
+The command "tune_grid" evaluates all 10 folds for each of the 7 hyper-parameter values. The "tune()" placeholder in the model design is replaced with the hyper-parameter values stored in "ParGridBreastCancer." The metrics accuracy, specificity, and sensitivity are calculated for each hyper-parameter value and fold.  
+
+```{r}
+set.seed(876)
+TuneResultsBreastCancer=tune_grid(TuneWFModelBreastCancer, 
+                                  resamples = FoldsBreastCancer, 
+                                  grid = ParGridBreastCancer, 
+                                  metrics =metric_set(accuracy, specificity, sensitivity),
+                                  control = control_grid(verbose = TRUE))
+```
+
+# Plotting the tuning results
+
+The performance for the different hyper-parameter values are shown below.
+
+```{r}
+autoplot(TuneResultsBreastCancer)
+```
+
+# Selecting the best hyper-parmeter from the tuning results
+
+The best hyper-parameter value is 10 if accuracy is used as the performance measure.
+
+```{r}
+BestHyperParBreastCancer= select_best(TuneResultsBreastCancer, "accuracy")
+print(BestHyperParBreastCancer)
+```
+
+# Finalizing the workflow with the best hyper-parameter
+
+The workflow is finalized using the optimal hyper-parameter value of k=10. The workflow can now be fitted to the training data and be used for predictions.
+
+```{r}
+BestWFModelBreastCancer=finalize_workflow(TuneWFModelBreastCancer, BestHyperParBreastCancer) %>% 
+  fit(DataTrain)
+print(BestWFModelBreastCancer)
+```
+
+# Using the testing data to predict and appending the predictions to the testing data 
+
+The predictions are added to the testing data, creating a new variable called ".pred_class". ".pred_0" represents the probability for each testing record's prediction to be benign, while ".pred_1" represents the probability for the prediction to be malignant. For example, the first testing record has a 100% probability of being benign (".pred_0 = 1.0"), meaning all of its 10 closest neighbors were benign cells, and a prediction of benign.
+
+```{r}
+DataPredWithTestData=augment(BestWFModelBreastCancer, DataTest)
+head(DataPredWithTestData)
+```
+
+# Creating a confusion matrix and assessing the prediction quality 
+
+The results illustrate that the model has an accuracy of 90%, a sensitivity of 92%, and a specificity of 86%. These metrics are derived from the confusion matrix, where the positive class is listed in the first row and column. Accuracy divides the sum of accurately predicted observations by the sum of all entries. This means the model predicted 90% of all records correctly. On the other hand, sensitivity measures the correct positive rate, where the model correctly predicted 92% of all benign cells. Lastly, specificity measures the correct negative rate, where 86% of all malignant cells are predicted correctly. 
+
+```{r}
+ConfMatrixBreastCancer=conf_mat(DataPredWithTestData, truth = DiagnosisIsMalignant, estimate = .pred_class)
+print(ConfMatrixBreastCancer)
+
+MetricBreastCancer=metric_set(accuracy, sensitivity, specificity)
+MetricBreastCancer(DataPredWithTestData, truth = DiagnosisIsMalignant, estimate = .pred_class)
+```
+
+## Attempt to improve prediction quality by balancing the training data
+
+The "count" command shows that the training data is unbalanced as there are almost twice as much observations that are benign compared to malignant. This may introduce bias where the model develops a tendency to predict in favor of the majority class. 
+
+The SMOTE(Synthetic Minority Over-sampling Technique) method is used to artificially generate new observations for the minority class that are similar but not identical to existing observations. To do this, the "themis" package needs to be loaded. 
+
+```{r}
+count(DataTrain, DiagnosisIsMalignant)
+library(themis)
+```
+
+## Running the model with balanced training data
+
+The codes below are identical to the codes above except that this time, the "tune()" placeholder is replaced by 10 based off of the tuning results earlier, the workflow is fitted to the training data, and that one additional step ("step_smote(DiagnosisIsMalignant)") is added to the recipe to balance the training data. 
+
+```{r}
+DataBreastCancer=import("Breast_Cancer_Wisconsin_Data.xlsx") %>% 
+  clean_names("upper_camel") %>% 
+  rename("DiagnosisIsMalignant"="Class") %>% 
+  select(DiagnosisIsMalignant,MarginalAdhesion,NormalNucleoli) %>%
+  mutate(DiagnosisIsMalignant=ifelse(DiagnosisIsMalignant==2,0,1)) %>%
+  mutate(DiagnosisIsMalignant=as.factor(DiagnosisIsMalignant)) 
+
+set.seed(876)
+Split7030=initial_split(DataBreastCancer, prop = 0.7, strata = DiagnosisIsMalignant)
+DataTrain=training(Split7030)
+DataTest=testing(Split7030)
+
+RecipeBreastCancer=recipe(DiagnosisIsMalignant~., data = DataTrain) %>% 
+  step_naomit() %>% 
+  step_normalize(all_predictors()) %>% 
+  step_smote(DiagnosisIsMalignant)
+
+ModelDeisgnKNN=nearest_neighbor(neighbors = 10, weight_func = "rectangular") %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+WFModelBreastCancer=workflow() %>% 
+  add_recipe(RecipeBreastCancer) %>% 
+  add_model(ModelDeisgnKNN) %>% 
+  fit(DataTrain)
+
+DataPredWithTestData=augment(WFModelBreastCancer, DataTest)
+head(DataPredWithTestData)
+
+ConfMatrixBreastCancerBalanced=conf_mat(DataPredWithTestData, truth = DiagnosisIsMalignant, estimate = .pred_class)
+print(ConfMatrixBreastCancerBalanced)
+
+MetricBreastCancerBalanced=metric_set(accuracy, sensitivity, specificity)
+MetricBreastCancerBalanced(DataPredWithTestData, truth = DiagnosisIsMalignant, estimate = .pred_class)
+```
+
+## Interpreting the results from balancing the training data
+
+It appears that balancing the training data did not improve the prediction quality significantly. Accuracy has improved by 1%, from 90% to 91%, while specificity has improved by 3%, from 86% to 89%. Sensitivity remained the same. This means the unbalanced data set did not introduce bias that favored the majority class. The overall predictive quality is fairly good. 
